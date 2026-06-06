@@ -898,3 +898,93 @@ contract OptimPush {
             bytes32 id = _laneIndex[i];
             if (lanes[id].exists && !lanes[id].muted && !deprecatedLanes[id]) return true;
         }
+        return false;
+    }
+
+    function operatorActive(address account) external view returns (bool) {
+        return isOperator[account] && !paused && fleetActive;
+    }
+
+    function relayActive(address account) external view returns (bool) {
+        return isRelay[account] && !paused && fleetActive;
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal — push core
+    // -------------------------------------------------------------------------
+
+    function _pushSingleCore(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        bytes32 schemaId,
+        bytes6 tag,
+        address sender
+    ) internal returns (bytes32 receiptId) {
+        if (payloadHash == bytes32(0)) revert OPS_ZeroBytes32();
+        LaneCfg storage lane = _requireLaneReady(laneId);
+        _requireSchemaIfPresent(schemaId);
+        _consumeQuota(sender, laneId, 1);
+
+        unchecked {
+            globalSeq += 1;
+        }
+        lane.lastPushBlock = uint64(block.number);
+        lane.pushCount += 1;
+
+        uint64 stampedAt = uint64(block.timestamp);
+        receiptId = OptimPushPack.receiptDigest(laneId, payloadHash, sender, globalSeq, stampedAt);
+        if (usedReceipts[receiptId]) revert OPS_ReceiptUsed();
+        usedReceipts[receiptId] = true;
+
+        emit OPS_PushSingle(laneId, sender, payloadHash, receiptId, globalSeq, stampedAt, tag);
+    }
+
+    function _pushBatchCore(
+        bytes32 laneId,
+        bytes32[] calldata payloadHashes,
+        bytes32 batchRoot,
+        bytes32 schemaId,
+        address sender
+    ) internal returns (uint64 seq) {
+        uint256 len = payloadHashes.length;
+        if (len == 0) revert OPS_BatchEmpty();
+        if (len > OPS_MAX_BATCH) revert OPS_BatchTooLarge();
+        if (batchRoot == bytes32(0)) revert OPS_ZeroBytes32();
+
+        bytes32 computed = _computeBatchRoot(payloadHashes);
+        if (computed != batchRoot) revert OPS_BatchMismatch();
+
+        LaneCfg storage lane = _requireLaneReady(laneId);
+        _requireSchemaIfPresent(schemaId);
+        _consumeQuota(sender, laneId, uint32(len));
+
+        unchecked {
+            globalSeq += 1;
+        }
+        seq = globalSeq;
+        lane.lastPushBlock = uint64(block.number);
+        lane.pushCount += uint64(len);
+
+        bytes32 receiptId = keccak256(abi.encode(batchRoot, laneId, seq, sender));
+        if (usedReceipts[receiptId]) revert OPS_ReceiptUsed();
+        usedReceipts[receiptId] = true;
+
+        emit OPS_PushBatch(laneId, sender, batchRoot, uint16(len), seq, uint64(block.timestamp));
+    }
+
+    function _requireLaneReady(bytes32 laneId) internal view returns (LaneCfg storage lane) {
+        lane = lanes[laneId];
+        if (!lane.exists) revert OPS_LaneMissing();
+        if (deprecatedLanes[laneId]) revert OPS_DeprecatedLane();
+        if (lane.muted) revert OPS_LaneMuted();
+        if (lane.lastPushBlock != 0 && block.number < lane.lastPushBlock + lane.minGapBlocks) {
+            revert OPS_LaneGap();
+        }
+    }
+
+    function _requireSchemaIfPresent(bytes32 schemaId) internal view {
+        if (schemaId == bytes32(0)) return;
+        if (!schemas[schemaId].live) revert OPS_SchemaMissing();
+    }
+
+    function _consumeQuota(address actor, bytes32 laneId, uint32 amount) internal {
