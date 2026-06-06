@@ -448,3 +448,93 @@ contract OptimPush {
             uint8 priority,
             uint32 minGapBlocks,
             uint32 ttlBlocks,
+            uint64 lastPushBlock,
+            uint64 pushCount,
+            string memory slug
+        )
+    {
+        LaneCfg storage lane = lanes[laneId];
+        return (
+            lane.exists,
+            lane.muted,
+            lane.priority,
+            lane.minGapBlocks,
+            lane.ttlBlocks,
+            lane.lastPushBlock,
+            lane.pushCount,
+            lane.slug
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Schemas
+    // -------------------------------------------------------------------------
+
+    function registerSchema(bytes32 schemaId, bytes32 fingerprint) external onlyCurator whenUnpaused {
+        if (schemaId == bytes32(0) || fingerprint == bytes32(0)) revert OPS_ZeroBytes32();
+        if (_schemaIndex.length >= OPS_MAX_SCHEMAS) revert OPS_QuotaExceeded();
+        if (schemas[schemaId].live) revert OPS_SchemaExists();
+
+        schemas[schemaId] = SchemaRec({
+            live: true,
+            fingerprint: fingerprint,
+            author: msg.sender,
+            registeredAt: uint64(block.timestamp)
+        });
+        _schemaIndex.push(schemaId);
+
+        emit OPS_SchemaRegistered(schemaId, fingerprint, msg.sender);
+    }
+
+    function revokeSchema(bytes32 schemaId) external onlyCurator {
+        SchemaRec storage rec = schemas[schemaId];
+        if (!rec.live) revert OPS_SchemaMissing();
+        rec.live = false;
+        emit OPS_SchemaRevoked(schemaId);
+    }
+
+    function schemaCount() external view returns (uint256) {
+        return _schemaIndex.length;
+    }
+
+    function schemaAt(uint256 index) external view returns (bytes32) {
+        return _schemaIndex[index];
+    }
+
+    function schemaMatches(bytes32 schemaId, bytes32 fingerprint) external view returns (bool) {
+        SchemaRec storage rec = schemas[schemaId];
+        return rec.live && rec.fingerprint == fingerprint;
+    }
+
+    // -------------------------------------------------------------------------
+    // Push — single
+    // -------------------------------------------------------------------------
+
+    function pushSingle(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        bytes32 schemaId,
+        bytes6 tag
+    ) external onlyOperator whenUnpaused whenFleetLive nonReentrant returns (bytes32 receiptId) {
+        receiptId = _pushSingleCore(laneId, payloadHash, schemaId, tag, msg.sender);
+    }
+
+    function pushSingleFor(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        bytes32 schemaId,
+        bytes6 tag,
+        address sender
+    ) external onlyOperator whenUnpaused whenFleetLive nonReentrant returns (bytes32 receiptId) {
+        if (sender == address(0)) revert OPS_ZeroAddress();
+        receiptId = _pushSingleCore(laneId, payloadHash, schemaId, tag, sender);
+    }
+
+    function pushWithPermit(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        bytes32 schemaId,
+        bytes6 tag,
+        address operator,
+        uint64 seq,
+        uint64 deadline,
