@@ -628,3 +628,93 @@ contract OptimPush {
     function operatorNonce(address operator) external view returns (uint256) {
         return operatorNonces[operator];
     }
+
+    function relayNonce(address relay) external view returns (uint256) {
+        return relayNonces[relay];
+    }
+
+    function receiptConsumed(bytes32 receiptId) external view returns (bool) {
+        return usedReceipts[receiptId];
+    }
+
+    function laneReady(bytes32 laneId) external view returns (bool ready, uint64 nextEligibleBlock) {
+        LaneCfg storage lane = lanes[laneId];
+        if (!lane.exists || lane.muted) return (false, 0);
+        if (lane.lastPushBlock == 0) return (true, uint64(block.number));
+        nextEligibleBlock = lane.lastPushBlock + lane.minGapBlocks;
+        ready = block.number >= nextEligibleBlock;
+    }
+
+    function computeBatchRoot(bytes32[] calldata payloadHashes) external pure returns (bytes32) {
+        return _computeBatchRoot(payloadHashes);
+    }
+
+    function domainSeparator() external view returns (bytes32) {
+        return DOMAIN_SEPARATOR;
+    }
+
+    function genesisDigest() external view returns (bytes32) {
+        return GENESIS_PUSH_DIGEST;
+    }
+
+    function stackRelayBoot() external view returns (address) {
+        return STACK_RELAY_BOOT;
+    }
+
+    function edgeProbeAnchor() external view returns (address) {
+        return EDGE_PROBE_ANCHOR;
+    }
+
+    function oracleTapAnchor() external view returns (address) {
+        return ORACLE_TAP_ANCHOR;
+    }
+
+    function mirrorGuardBoot() external view returns (address) {
+        return MIRROR_GUARD_BOOT;
+    }
+
+    function warmupVectorSeed() external view returns (bytes32) {
+        return WARMUP_VECTOR_SEED;
+    }
+
+    // -------------------------------------------------------------------------
+    // Schema bundles & lane lifecycle
+    // -------------------------------------------------------------------------
+
+    function registerSchemaBundle(bytes32 bundleId, bytes32[] calldata schemaIds) external onlyCurator whenUnpaused {
+        if (bundleId == bytes32(0)) revert OPS_ZeroBytes32();
+        uint256 len = schemaIds.length;
+        if (len == 0) revert OPS_BundleEmpty();
+        if (len > 32) revert OPS_BundleTooLarge();
+        if (_schemaBundles[bundleId].length != 0) revert OPS_SchemaExists();
+
+        bytes32[] storage target = _schemaBundles[bundleId];
+        for (uint256 i = 0; i < len; ++i) {
+            if (!schemas[schemaIds[i]].live) revert OPS_SchemaMissing();
+            target.push(schemaIds[i]);
+        }
+        emit OPS_SchemaBundleRegistered(bundleId, uint16(len));
+    }
+
+    function schemaBundleCount(bytes32 bundleId) external view returns (uint256) {
+        return _schemaBundles[bundleId].length;
+    }
+
+    function schemaBundleAt(bytes32 bundleId, uint256 index) external view returns (bytes32) {
+        return _schemaBundles[bundleId][index];
+    }
+
+    function bundleMatches(bytes32 bundleId, bytes32[] calldata fingerprints) external view returns (bool) {
+        bytes32[] storage ids = _schemaBundles[bundleId];
+        uint256 len = ids.length;
+        if (len == 0 || len != fingerprints.length) return false;
+        for (uint256 i = 0; i < len; ++i) {
+            if (schemas[ids[i]].fingerprint != fingerprints[i]) return false;
+        }
+        return true;
+    }
+
+    function deprecateLane(bytes32 laneId) external onlyCurator {
+        LaneCfg storage lane = lanes[laneId];
+        if (!lane.exists) revert OPS_LaneMissing();
+        if (deprecatedLanes[laneId]) revert OPS_LaneDeprecatedErr();
