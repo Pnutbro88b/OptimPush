@@ -988,3 +988,89 @@ contract OptimPush {
     }
 
     function _consumeQuota(address actor, bytes32 laneId, uint32 amount) internal {
+        QuotaBucket storage bucket = quotas[actor][laneId];
+        if (block.timestamp >= bucket.windowStart + OPS_QUOTA_WINDOW) {
+            bucket.windowStart = uint64(block.timestamp);
+            bucket.used = 0;
+        }
+        uint256 next = uint256(bucket.used) + amount;
+        if (next > OPS_QUOTA_CAP) revert OPS_QuotaExceeded();
+        bucket.used = uint32(next);
+        emit OPS_QuotaBurned(actor, laneId, amount);
+    }
+
+    function _computeBatchRoot(bytes32[] calldata leaves) internal pure returns (bytes32 root) {
+        uint256 n = leaves.length;
+        if (n == 0) revert OPS_BatchEmpty();
+
+        bytes32[] memory layer = new bytes32[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            if (leaves[i] == bytes32(0)) revert OPS_ZeroBytes32();
+            layer[i] = leaves[i];
+        }
+
+        while (n > 1) {
+            uint256 next = (n + 1) / 2;
+            for (uint256 i = 0; i < next; ++i) {
+                bytes32 left = layer[i * 2];
+                bytes32 right = (i * 2 + 1 < n) ? layer[i * 2 + 1] : left;
+                layer[i] = OptimPushPack.batchLeaf(left, right);
+            }
+            n = next;
+        }
+        root = layer[0];
+    }
+
+    function _validateSlug(string calldata slug) internal pure {
+        bytes memory b = bytes(slug);
+        uint256 len = b.length;
+        if (len == 0 || len > OPS_MAX_SLUG_LEN) revert OPS_SlugInvalid();
+        for (uint256 i = 0; i < len; ++i) {
+            bytes1 c = b[i];
+            bool ok = (c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x7A) || c == 0x2D || c == 0x5F;
+            if (!ok) revert OPS_SlugInvalid();
+        }
+    }
+
+    function _verifyPushAttest(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        uint64 seq,
+        uint64 deadline,
+        bytes6 tag,
+        address operator,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal {
+        if (operatorNonces[operator] != seq) revert OPS_SeqStale();
+        operatorNonces[operator] = seq + 1;
+
+        bytes32 structHash = keccak256(abi.encode(PUSH_ATTEST_TYPEHASH, laneId, payloadHash, seq, deadline, tag));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+        address recovered = ecrecover(digest, v, r, s);
+        if (recovered != operator) revert OPS_InvalidSignature();
+    }
+
+    function _verifyRelayAttest(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        address relayer,
+        uint64 seq,
+        uint64 deadline,
+        address signer,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal {
+        if (relayNonces[relayer] != seq) revert OPS_SeqStale();
+        relayNonces[relayer] = seq + 1;
+
+        bytes32 structHash = keccak256(
+            abi.encode(RELAY_ATTEST_TYPEHASH, laneId, payloadHash, relayer, seq, deadline)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+        address recovered = ecrecover(digest, v, r, s);
+        if (recovered != signer) revert OPS_InvalidSignature();
+    }
+}
