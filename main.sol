@@ -538,3 +538,93 @@ contract OptimPush {
         address operator,
         uint64 seq,
         uint64 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external whenUnpaused whenFleetLive nonReentrant returns (bytes32 receiptId) {
+        if (block.timestamp > deadline) revert OPS_PermitExpired();
+        if (!isOperator[operator]) revert OPS_NotOperator();
+        _verifyPushAttest(laneId, payloadHash, seq, deadline, tag, operator, v, r, s);
+        receiptId = _pushSingleCore(laneId, payloadHash, schemaId, tag, operator);
+    }
+
+    // -------------------------------------------------------------------------
+    // Push — batch
+    // -------------------------------------------------------------------------
+
+    function pushBatch(
+        bytes32 laneId,
+        bytes32[] calldata payloadHashes,
+        bytes32 batchRoot,
+        bytes32 schemaId
+    ) external onlyOperator whenUnpaused whenFleetLive nonReentrant returns (uint64 seq) {
+        seq = _pushBatchCore(laneId, payloadHashes, batchRoot, schemaId, msg.sender);
+    }
+
+    function pushBatchChecked(
+        bytes32 laneId,
+        bytes32[] calldata payloadHashes,
+        bytes32 schemaId
+    ) external onlyOperator whenUnpaused whenFleetLive nonReentrant returns (bytes32 root, uint64 seq) {
+        root = _computeBatchRoot(payloadHashes);
+        seq = _pushBatchCore(laneId, payloadHashes, root, schemaId, msg.sender);
+    }
+
+    // -------------------------------------------------------------------------
+    // Relay delivery
+    // -------------------------------------------------------------------------
+
+    function relayDeliver(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        bytes32 schemaId,
+        bytes6 tag,
+        address hook
+    ) external onlyRelay whenUnpaused whenFleetLive nonReentrant returns (bytes32 receiptId) {
+        if (hook != address(0) && hook.code.length == 0) revert OPS_BadInput();
+        receiptId = _pushSingleCore(laneId, payloadHash, schemaId, tag, msg.sender);
+        emit OPS_RelayDelivered(laneId, msg.sender, payloadHash, receiptId, globalSeq);
+
+        if (hook != address(0)) {
+            try IOptimPushReceiver(hook).onOptimPushDelivery(laneId, payloadHash, msg.sender, globalSeq) {}
+            catch {
+                revert OPS_HookRejected();
+            }
+        }
+    }
+
+    function relayWithPermit(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        bytes32 schemaId,
+        bytes6 tag,
+        address relayer,
+        uint64 seq,
+        uint64 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external whenUnpaused whenFleetLive nonReentrant returns (bytes32 receiptId) {
+        if (block.timestamp > deadline) revert OPS_PermitExpired();
+        if (!isRelay[relayer]) revert OPS_NotRelay();
+        _verifyRelayAttest(laneId, payloadHash, relayer, seq, deadline, relayer, v, r, s);
+        receiptId = _pushSingleCore(laneId, payloadHash, schemaId, tag, relayer);
+        emit OPS_RelayDelivered(laneId, relayer, payloadHash, receiptId, globalSeq);
+    }
+
+    // -------------------------------------------------------------------------
+    // Quota views
+    // -------------------------------------------------------------------------
+
+    function quotaRemaining(address actor, bytes32 laneId) external view returns (uint32 remaining) {
+        QuotaBucket storage bucket = quotas[actor][laneId];
+        if (block.timestamp >= bucket.windowStart + OPS_QUOTA_WINDOW) {
+            return uint32(OPS_QUOTA_CAP);
+        }
+        if (bucket.used >= OPS_QUOTA_CAP) return 0;
+        return uint32(OPS_QUOTA_CAP - bucket.used);
+    }
+
+    function operatorNonce(address operator) external view returns (uint256) {
+        return operatorNonces[operator];
+    }
