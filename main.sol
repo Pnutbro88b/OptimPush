@@ -358,3 +358,93 @@ contract OptimPush {
 
     function setCurator(address account, bool enabled) external onlyOwner {
         if (account == address(0)) revert OPS_ZeroAddress();
+        isCurator[account] = enabled;
+        emit OPS_CuratorSet(account, enabled);
+    }
+
+    function snapshotMetrics() external onlyOwner returns (uint64 seq, uint32 laneCount, uint32 schemaCount) {
+        seq = globalSeq;
+        laneCount = uint32(_laneIndex.length);
+        schemaCount = uint32(_schemaIndex.length);
+        emit OPS_MetricsSnapshot(seq, laneCount, schemaCount);
+    }
+
+    // -------------------------------------------------------------------------
+    // Lanes
+    // -------------------------------------------------------------------------
+
+    function openLane(
+        string calldata slug,
+        uint8 priority,
+        uint32 minGapBlocks,
+        uint32 ttlBlocks
+    ) external onlyCurator whenUnpaused returns (bytes32 laneId) {
+        _validateSlug(slug);
+        if (_laneIndex.length >= OPS_MAX_OPEN_LANES) revert OPS_QuotaExceeded();
+        if (ttlBlocks == 0) ttlBlocks = uint32(OPS_DEFAULT_TTL);
+        if (ttlBlocks > 50_000_000) revert OPS_BadInput();
+        if (minGapBlocks > 2_000_000) revert OPS_BadInput();
+        if (priority > 9) revert OPS_BadInput();
+
+        laneId = OptimPushPack.laneKey(slug, priority);
+        if (lanes[laneId].exists) revert OPS_LaneExists();
+
+        lanes[laneId] = LaneCfg({
+            exists: true,
+            muted: false,
+            priority: priority,
+            minGapBlocks: minGapBlocks,
+            ttlBlocks: ttlBlocks,
+            lastPushBlock: 0,
+            pushCount: 0,
+            slug: slug
+        });
+        _laneIndex.push(laneId);
+
+        emit OPS_LaneOpened(laneId, slug, priority, minGapBlocks, ttlBlocks);
+    }
+
+    function tuneLane(bytes32 laneId, uint32 minGapBlocks, uint32 ttlBlocks) external onlyCurator {
+        LaneCfg storage lane = lanes[laneId];
+        if (!lane.exists) revert OPS_LaneMissing();
+        if (ttlBlocks == 0 || ttlBlocks > 50_000_000) revert OPS_BadInput();
+        if (minGapBlocks > 2_000_000) revert OPS_BadInput();
+        lane.minGapBlocks = minGapBlocks;
+        lane.ttlBlocks = ttlBlocks;
+        emit OPS_LaneTuned(laneId, minGapBlocks, ttlBlocks);
+    }
+
+    function muteLane(bytes32 laneId, bool muted) external onlyCurator {
+        LaneCfg storage lane = lanes[laneId];
+        if (!lane.exists) revert OPS_LaneMissing();
+        if (lane.muted == muted) revert OPS_SameValue();
+        lane.muted = muted;
+        emit OPS_LaneMuted(laneId, muted);
+    }
+
+    function setLanePriority(bytes32 laneId, uint8 priority) external onlyCurator {
+        LaneCfg storage lane = lanes[laneId];
+        if (!lane.exists) revert OPS_LaneMissing();
+        if (priority > 9) revert OPS_BadInput();
+        if (lane.priority == priority) revert OPS_SameValue();
+        lane.priority = priority;
+        emit OPS_LanePrioritySet(laneId, priority);
+    }
+
+    function laneCount() external view returns (uint256) {
+        return _laneIndex.length;
+    }
+
+    function laneAt(uint256 index) external view returns (bytes32) {
+        return _laneIndex[index];
+    }
+
+    function laneSummary(bytes32 laneId)
+        external
+        view
+        returns (
+            bool exists,
+            bool muted,
+            uint8 priority,
+            uint32 minGapBlocks,
+            uint32 ttlBlocks,
