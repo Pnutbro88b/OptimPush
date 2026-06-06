@@ -268,3 +268,93 @@ contract OptimPush {
         EDGE_PROBE_ANCHOR = 0x0FC92d10b7Dea4366d83689389EE5E6dAdfBfE35;
         ORACLE_TAP_ANCHOR = 0x9FCd9685063175f49C5c8F84039307F6e39524e7;
         MIRROR_GUARD_BOOT = 0xA7e8E6622f1D4eC88a4DdBa69fbb89B05f082766;
+        CDN_MIRROR_SEED = 0x51ab86546f5c1c6e93385ab1787f372a0708f60ebf2dc730e821e32472a205ff;
+        WARMUP_VECTOR_SEED = 0x59c24d01728feb1229c91ac969b035b76379723929d18ca4ab897c24f84b8fb0;
+        DEPLOYED_AT_BLOCK = block.number;
+        DEPLOYED_AT_TIME = uint64(block.timestamp);
+
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("OptimPush")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+
+        GENESIS_PUSH_DIGEST = keccak256(
+            abi.encodePacked(
+                OPS_DOMAIN_MAGIC,
+                CDN_MIRROR_SEED,
+                block.chainid,
+                address(this),
+                msg.sender,
+                STACK_RELAY_BOOT,
+                EDGE_PROBE_ANCHOR,
+                ORACLE_TAP_ANCHOR,
+                MIRROR_GUARD_BOOT,
+                WARMUP_VECTOR_SEED,
+                block.timestamp,
+                block.prevrandao
+            )
+        );
+
+        isOperator[msg.sender] = true;
+        isCurator[msg.sender] = true;
+        isRelay[STACK_RELAY_BOOT] = true;
+        paused = false;
+        fleetActive = false;
+        globalSeq = 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Admin — ownership & fleet
+    // -------------------------------------------------------------------------
+
+    function proposeOwner(address next) external onlyOwner {
+        if (next == address(0)) revert OPS_ZeroAddress();
+        pendingOwner = next;
+        emit OPS_OwnerProposed(owner, next);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner || pendingOwner == address(0)) revert OPS_NotPendingOwner();
+        address prev = owner;
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OPS_OwnerAccepted(prev, owner);
+    }
+
+    function renounceOwnership() external onlyOwner {
+        ownerRenounced = true;
+        pendingOwner = address(0);
+        emit OPS_OwnershipRenounced(owner);
+    }
+
+    function setPaused(bool value) external onlyOwner {
+        if (paused == value) revert OPS_SameValue();
+        paused = value;
+        emit OPS_PauseSet(value);
+    }
+
+    function activateFleet(bool active) external onlyOwner {
+        if (fleetActive == active) revert OPS_SameValue();
+        fleetActive = active;
+        emit OPS_FleetActivated(active);
+    }
+
+    function setOperator(address account, bool enabled) external onlyOwner {
+        if (account == address(0)) revert OPS_ZeroAddress();
+        isOperator[account] = enabled;
+        emit OPS_OperatorSet(account, enabled);
+    }
+
+    function setRelay(address account, bool enabled) external onlyOwner {
+        if (account == address(0)) revert OPS_ZeroAddress();
+        isRelay[account] = enabled;
+        emit OPS_RelaySet(account, enabled);
+    }
+
+    function setCurator(address account, bool enabled) external onlyOwner {
+        if (account == address(0)) revert OPS_ZeroAddress();
