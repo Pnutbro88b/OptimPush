@@ -808,3 +808,93 @@ contract OptimPush {
     }
 
     function lanesByPriority(uint8 priority, uint256 offset, uint256 limit)
+        external
+        view
+        returns (bytes32[] memory matches, uint256 matchedTotal)
+    {
+        uint256 total = _laneIndex.length;
+        uint256 matchCount;
+        for (uint256 i = 0; i < total; ++i) {
+            bytes32 id = _laneIndex[i];
+            LaneCfg storage lane = lanes[id];
+            if (lane.exists && lane.priority == priority && !deprecatedLanes[id]) {
+                matchCount += 1;
+            }
+        }
+        matchedTotal = matchCount;
+        if (offset >= matchCount) {
+            return (new bytes32[](0), matchedTotal);
+        }
+
+        uint256 end = offset + limit;
+        if (end > matchCount) end = matchCount;
+        uint256 outLen = end - offset;
+        matches = new bytes32[](outLen);
+
+        uint256 seen;
+        uint256 wrote;
+        for (uint256 i = 0; i < total && wrote < outLen; ++i) {
+            bytes32 id = _laneIndex[i];
+            LaneCfg storage lane = lanes[id];
+            if (lane.exists && lane.priority == priority && !deprecatedLanes[id]) {
+                if (seen >= offset) {
+                    matches[wrote] = id;
+                    wrote += 1;
+                }
+                seen += 1;
+            }
+        }
+    }
+
+    function laneTTLRemaining(bytes32 laneId) external view returns (uint64 expiresAt, bool expired) {
+        LaneCfg storage lane = lanes[laneId];
+        if (!lane.exists) revert OPS_LaneMissing();
+        expiresAt = lane.lastPushBlock + lane.ttlBlocks;
+        expired = lane.lastPushBlock != 0 && block.number > expiresAt;
+    }
+
+    function pushCountForLane(bytes32 laneId) external view returns (uint64) {
+        return lanes[laneId].pushCount;
+    }
+
+    function anchorFingerprint() external view returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                STACK_RELAY_BOOT,
+                EDGE_PROBE_ANCHOR,
+                ORACLE_TAP_ANCHOR,
+                MIRROR_GUARD_BOOT,
+                CDN_MIRROR_SEED
+            )
+        );
+    }
+
+    function hashPayload(string calldata raw) external pure returns (bytes32) {
+        return keccak256(bytes(raw));
+    }
+
+    function hashPayloadPair(bytes32 a, bytes32 b) external pure returns (bytes32) {
+        return OptimPushPack.batchLeaf(a, b);
+    }
+
+    function deriveLaneId(string calldata slug, uint8 priority) external pure returns (bytes32) {
+        return OptimPushPack.laneKey(slug, priority);
+    }
+
+    function previewReceipt(
+        bytes32 laneId,
+        bytes32 payloadHash,
+        address sender,
+        uint64 seq,
+        uint64 stampedAt
+    ) external pure returns (bytes32) {
+        return OptimPushPack.receiptDigest(laneId, payloadHash, sender, seq, stampedAt);
+    }
+
+    function isFleetReady() external view returns (bool) {
+        if (paused || !fleetActive) return false;
+        uint256 total = _laneIndex.length;
+        for (uint256 i = 0; i < total; ++i) {
+            bytes32 id = _laneIndex[i];
+            if (lanes[id].exists && !lanes[id].muted && !deprecatedLanes[id]) return true;
+        }
