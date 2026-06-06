@@ -718,3 +718,93 @@ contract OptimPush {
         LaneCfg storage lane = lanes[laneId];
         if (!lane.exists) revert OPS_LaneMissing();
         if (deprecatedLanes[laneId]) revert OPS_LaneDeprecatedErr();
+        deprecatedLanes[laneId] = true;
+        lane.muted = true;
+        emit OPS_LaneDeprecated(laneId, msg.sender);
+        emit OPS_LaneMuted(laneId, true);
+    }
+
+    function isLaneDeprecated(bytes32 laneId) external view returns (bool) {
+        return deprecatedLanes[laneId];
+    }
+
+    function setOperatorsBulk(address[] calldata accounts, bool enabled) external onlyOwner {
+        uint256 len = accounts.length;
+        if (len == 0) revert OPS_BatchEmpty();
+        if (len > 128) revert OPS_BatchTooLarge();
+        for (uint256 i = 0; i < len; ++i) {
+            address account = accounts[i];
+            if (account == address(0)) revert OPS_ZeroAddress();
+            isOperator[account] = enabled;
+            emit OPS_OperatorSet(account, enabled);
+        }
+        emit OPS_OperatorBulkSet(uint16(len), enabled);
+    }
+
+    function setRelaysBulk(address[] calldata accounts, bool enabled) external onlyOwner {
+        uint256 len = accounts.length;
+        if (len == 0) revert OPS_BatchEmpty();
+        if (len > 64) revert OPS_BatchTooLarge();
+        for (uint256 i = 0; i < len; ++i) {
+            address account = accounts[i];
+            if (account == address(0)) revert OPS_ZeroAddress();
+            isRelay[account] = enabled;
+            emit OPS_RelaySet(account, enabled);
+        }
+    }
+
+    function pushMultiLane(
+        bytes32[] calldata laneIds,
+        bytes32[] calldata payloadHashes,
+        bytes32 schemaId,
+        bytes6 tag
+    ) external onlyOperator whenUnpaused whenFleetLive nonReentrant returns (uint64 seq) {
+        uint256 laneLen = laneIds.length;
+        if (laneLen == 0 || laneLen > 12) revert OPS_BatchTooLarge();
+        if (payloadHashes.length != laneLen) revert OPS_BatchMismatch();
+
+        for (uint256 i = 0; i < laneLen; ++i) {
+            _pushSingleCore(laneIds[i], payloadHashes[i], schemaId, tag, msg.sender);
+        }
+        seq = globalSeq;
+        emit OPS_MultiLanePush(laneIds[0], uint16(laneLen), seq);
+    }
+
+    function fleetProbe() external view returns (uint32 live, uint32 muted, bool healthy) {
+        uint256 total = _laneIndex.length;
+        for (uint256 i = 0; i < total; ++i) {
+            LaneCfg storage lane = lanes[_laneIndex[i]];
+            if (!lane.exists || deprecatedLanes[_laneIndex[i]]) continue;
+            if (lane.muted) {
+                muted += 1;
+            } else {
+                live += 1;
+            }
+        }
+        healthy = fleetActive && !paused && live > 0;
+    }
+
+    function emitFleetProbe() external whenUnpaused returns (uint32 live, uint32 muted, bool healthy) {
+        (live, muted, healthy) = this.fleetProbe();
+        emit OPS_FleetProbe(msg.sender, live, muted, healthy);
+    }
+
+    function lanesFiltered(uint256 offset, uint256 limit)
+        external
+        view
+        returns (bytes32[] memory slice, uint256 total)
+    {
+        total = _laneIndex.length;
+        if (offset >= total) {
+            return (new bytes32[](0), total);
+        }
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 outLen = end - offset;
+        slice = new bytes32[](outLen);
+        for (uint256 i = 0; i < outLen; ++i) {
+            slice[i] = _laneIndex[offset + i];
+        }
+    }
+
+    function lanesByPriority(uint8 priority, uint256 offset, uint256 limit)
