@@ -178,3 +178,93 @@ contract OptimPush {
 
     // --- access state ---
     address public owner;
+    bool public paused;
+    bool public ownerRenounced;
+    bool public fleetActive;
+    address public pendingOwner;
+    mapping(address => bool) public isOperator;
+    mapping(address => bool) public isRelay;
+    mapping(address => bool) public isCurator;
+
+    // --- lane + schema ---
+    struct LaneCfg {
+        bool exists;
+        bool muted;
+        uint8 priority;
+        uint32 minGapBlocks;
+        uint32 ttlBlocks;
+        uint64 lastPushBlock;
+        uint64 pushCount;
+        string slug;
+    }
+
+    struct SchemaRec {
+        bool live;
+        bytes32 fingerprint;
+        address author;
+        uint64 registeredAt;
+    }
+
+    struct QuotaBucket {
+        uint64 windowStart;
+        uint32 used;
+    }
+
+    mapping(bytes32 => LaneCfg) public lanes;
+    mapping(bytes32 => SchemaRec) public schemas;
+    mapping(bytes32 => bool) public deprecatedLanes;
+    mapping(bytes32 => bytes32[]) private _schemaBundles;
+    mapping(address => mapping(bytes32 => QuotaBucket)) public quotas;
+    mapping(address => uint256) public operatorNonces;
+    mapping(address => uint256) public relayNonces;
+
+    bytes32[] private _laneIndex;
+    bytes32[] private _schemaIndex;
+
+    uint64 public globalSeq;
+    uint256 private _lock;
+
+    modifier onlyOwner() {
+        if (ownerRenounced) revert OPS_OwnerRenounced();
+        if (msg.sender != owner) revert OPS_NotOwner();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!isOperator[msg.sender]) revert OPS_NotOperator();
+        _;
+    }
+
+    modifier onlyRelay() {
+        if (!isRelay[msg.sender]) revert OPS_NotRelay();
+        _;
+    }
+
+    modifier onlyCurator() {
+        if (!isCurator[msg.sender]) revert OPS_NotCurator();
+        _;
+    }
+
+    modifier whenUnpaused() {
+        if (paused) revert OPS_Paused();
+        _;
+    }
+
+    modifier whenFleetLive() {
+        if (!fleetActive) revert OPS_FleetInactive();
+        _;
+    }
+
+    modifier nonReentrant() {
+        if (_lock == 1) revert OPS_Reentry();
+        _lock = 1;
+        _;
+        _lock = 0;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        STACK_RELAY_BOOT = 0x95E98785a3CC7630c79F4b1ac34380ab1AcdbFe6;
+        EDGE_PROBE_ANCHOR = 0x0FC92d10b7Dea4366d83689389EE5E6dAdfBfE35;
+        ORACLE_TAP_ANCHOR = 0x9FCd9685063175f49C5c8F84039307F6e39524e7;
+        MIRROR_GUARD_BOOT = 0xA7e8E6622f1D4eC88a4DdBa69fbb89B05f082766;
